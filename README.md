@@ -2,7 +2,6 @@
 <a name="header1"></a>
 [![licence badge]][licence]
 [![issues badge]][issues]
-[![contributors_badge]][contributors]
 
 ## sp_Semaphore
 
@@ -15,3 +14,9 @@ For example, if you have a SQL Server that hosts multiple databases you might wi
 This tool can help with that.
 
 It's behaviour is much the same as the `SemaphoreSlim` class within the .NET standard library, and this implementation is built on top of the `sp_getapplock` stored procedure that ships with SQL Server.
+
+[licence badge]:https://img.shields.io/badge/license-MIT-green.svg
+[issues badge]:https://img.shields.io/github/issues/DanielLoth/SQL-Server-Tools.svg
+
+[licence]:https://github.com/DanielLoth/SQL-Server-Tools/blob/master/LICENSE
+[issues]:https://github.com/DanielLoth/SQL-Server-Tools/issues
