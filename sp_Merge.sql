@@ -343,10 +343,8 @@ begin
 				i.is_primary_key = 1
 		);
 
-	select @UpdateColumnList, @UpdateColumnWhereClausePredicate;
-
-
-	select @KeysEqualWhereClausePredicate, @PrimaryKeyColumnList;
+	--select @UpdateColumnList, @UpdateColumnWhereClausePredicate;
+	--select @KeysEqualWhereClausePredicate, @PrimaryKeyColumnList;
 
 	set @Query = N'
 	set nocount, xact_abort on;
@@ -486,7 +484,7 @@ begin
 	set @Query = replace(@Query, '##UPDATE_WHERE_CLAUSE##', '1=1');
 	set @Query = replace(@Query, '##UPDATE_COLUMNS##', @UpdateColumnList);
 
-	print @Query;
+	--print @Query;
 	--return;
 
 	declare @Done bit = 0;
