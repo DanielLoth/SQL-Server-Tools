@@ -23,21 +23,50 @@ go
 use EasyCDC;
 go
 
+--select * from sys.databases where database_id = db_id();
+go
+
+if not exists (
+	select 1
+	from sys.databases
+	where
+		database_id = db_id() and
+		owner_sid = 0x01
+)
+begin
+	exec('alter authorization on database::EasyCDC to sa;');
+end
+go
+
+if not exists (
+	select 1
+	from sys.databases
+	where
+		database_id = db_id() and
+		is_cdc_enabled = 1
+)
+begin
+	exec sys.sp_cdc_enable_db;
+end
+go
+
 drop procedure if exists
-	EasyCDC.P1,
-	EasyCDC.ConfigureCDC;
+	EasyCDC.ConfigureCDC,
+	EasyCDC.MergeConfig,
+	EasyCDC.UpdateConsumerProgress;
 go
 
 drop table if exists
-	EasyCDC.SourceTable,
 	EasyCDC.SourceColumn,
+	EasyCDC.SourceTable,
 	EasyCDC.Config;
 go
 
 drop trigger if exists DatabaseTrigger on database;
 go
 
-drop type if exists EasyCDC.MyType;
+drop type if exists	EasyCDC.SourceTable;
+drop type if exists EasyCDC.SourceColumn;
 go
 
 drop schema if exists EasyCDC;
@@ -74,6 +103,9 @@ go
 insert into EasyCDC.Config default values;
 go
 
+--select * from EasyCDC.Config;
+go
+
 create table EasyCDC.SourceTable (
 	SchemaName sysname not null,
 	TableName sysname not null,
@@ -95,7 +127,11 @@ create table EasyCDC.SourceColumn (
 	ColumnName sysname not null,
 
 	constraint UC_EasyCDC_SourceColumn_PK
-	primary key clustered (SchemaName, TableName, ColumnName)
+	primary key clustered (SchemaName, TableName, ColumnName),
+
+	constraint EasyCDC_SourceTable_comprises_SourceColumn_FK
+	foreign key (SchemaName, TableName)
+	references EasyCDC.SourceTable (SchemaName, TableName)
 );
 go
 
@@ -125,15 +161,155 @@ end
 go
 
 create procedure EasyCDC.ConfigureCDC
+	@Mode nvarchar(20) = 'Commit'
+with execute as 'EasyCDCExecUser'
 as
 begin
 	set nocount, xact_abort on;
+
+	if @@trancount != 0 throw 20240520, N'Open transaction not allowed.', 1;
 end
 go
 
-create type EasyCDC.MyType as table (
-	Id int
+create procedure EasyCDC.UpdateConsumerProgress
+as
+begin
+	set nocount, xact_abort on;
+
+	if @@trancount != 0 throw 20240520, N'Open transaction not allowed.', 1;
+end
+go
+
+create type EasyCDC.SourceTable as table (
+	SchemaName sysname not null,
+	TableName sysname not null,
+
+	primary key clustered (SchemaName, TableName)
 );
+go
+
+create type EasyCDC.SourceColumn as table (
+	SchemaName sysname not null,
+	TableName sysname not null,
+	ColumnName sysname not null
+);
+go
+
+create procedure EasyCDC.MergeConfig
+	@SourceTable EasyCDC.SourceTable readonly,
+	@SourceColumn EasyCDC.SourceColumn readonly
+as
+begin
+	set nocount, xact_abort on;
+
+	if @@trancount != 0 throw 20240520, N'Open transaction not allowed.', 1;
+
+	begin try
+		begin transaction;
+
+		declare @GetLocks bit =
+			iif(
+				exists(select 1 from EasyCDC.SourceTable with (serializable, tablockx)) and
+				exists(select 1 from EasyCDC.SourceColumn with (serializable, tablockx)),
+				1,
+				0
+			);
+
+		delete EasyCDC.SourceColumn;
+		delete EasyCDC.SourceTable;
+
+		insert into EasyCDC.SourceTable (
+			SchemaName,
+			TableName,
+			CaptureInstancePrefix,
+			SupportsNetChanges,
+			RoleName,
+			IndexName,
+			FilegroupName,
+			AllowPartitionSwitch
+		)
+		select
+			SchemaName,
+			TableName,
+			CaptureInstancePrefix,
+			SupportsNetChanges,
+			RoleName,
+			IndexName,
+			FilegroupName,
+			AllowPartitionSwitch
+		from EasyCDC.SourceTable;
+
+		insert into EasyCDC.SourceColumn (
+			SchemaName,
+			TableName,
+			ColumnName
+		)
+		select
+			SchemaName,
+			TableName,
+			ColumnName
+		from EasyCDC.SourceColumn;
+
+		--select d1.*, d2.*
+		--from sys.tables t
+		--outer apply (select t.* for json path, include_null_values, without_array_wrapper) d1(JsonVal)
+		--outer apply (select * from openjson(JsonVal) with (name sysname '$.name')) d2(TableName);
+
+		select a.*
+		into #Temp
+		from (
+			select
+				object_schema_name(t.object_id) as SchemaName,
+				t.name as TableName,
+				t.is_tracked_by_cdc as IsTrackedByCDC
+			from sys.tables t
+		) t
+		outer apply (
+			select *
+			from (select convert(varchar(20), 'TABLE')) a(RowType)
+			outer apply (select t.* for json path, include_null_values, without_array_wrapper) d1(JsonVal)
+		) a
+		union all
+		select a.*
+		from (
+			select
+				object_schema_name(i.object_id) as SchemaName,
+				object_name(i.object_id) as ObjectName,
+				i.name as IndexName,
+				i.is_unique as IsUnique,
+				i.is_primary_key as IsPrimaryKey,
+				i.is_unique_constraint as IsUniqueConstraint
+			from sys.indexes i
+			where
+				exists (
+					select 1
+					from sys.tables t
+					where
+						i.object_id = t.object_id
+				)
+		) i
+		outer apply (
+			select *
+			from (select convert(varchar(20), 'INDEX')) a(RowType)
+			outer apply (select i.* for json path, include_null_values, without_array_wrapper) d1(JsonVal)
+		) a;
+
+		--exec tempdb..sp_help '#Temp';
+
+		--select * from sys.indexes;
+		select * from cdc.change_tables ct;
+		select * from sys.key_constraints;
+
+		commit;
+	end try
+	begin catch
+		if @@trancount != 0 rollback;
+		throw;
+	end catch
+end
+go
+
+exec EasyCDC.MergeConfig;
 go
 
 --declare @Text nvarchar(max) = N'';
@@ -149,4 +325,13 @@ go
 --from L5;
 
 --select convert(xml, concat('<?Blah -- ', @CrLf, @Text, @CrLf, '-- ?>'));
+--go
+
+--exec sys.sp_cdc_disable_table 'dbo', 'A', 'all';
+--go
+--drop table if exists A;
+--go
+--create table A (Id int not null primary key);
+--go
+--exec sys.sp_cdc_enable_table 'dbo', 'A', 'dbo_A', @role_name = null;
 --go
